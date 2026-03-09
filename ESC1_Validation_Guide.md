@@ -141,6 +141,34 @@ auditpol /set /subcategory:"File Share" /success:enable /failure:enable
   - 4672：Special privileges assigned to new logon（不一定每次都有，取決於情境）
 
 ---
+【核心判斷】
+你要的是「指令 vs 事件」的直接對照表，而不是冗長的驗證流程。
+
+【指令與事件對照表】
+
+| 指令 | 預期事件 | 主機位置 | 關鍵欄位 |
+|------|----------|----------|----------|
+| `Certify.exe enum-templates /ca:10.0.0.206\sme-SME-SWP-W-AD-CA /vulnerable` | 通常無 4886/4887 | CA | N/A |
+| | 可能 4769 (Kerberos Service Ticket) | DC | 取決於工具實作 |
+| | 4688 (Process Creation) | 測試機 | 需啟用 Process Auditing |
+| `Certify.exe request /ca:10.0.0.206\sme-SME-SWP-W-AD-CA /template:ESC1 /upn:Administrator@sme.local` | **4886** (憑證申請) | CA | RequestId, Requester, Template |
+| | **4887** (憑證簽發) | CA | RequestId, Requester, Subject |
+| `Rubeus.exe asktgt /user:Administrator /certificate:[...] /ptt` | **4768** (Kerberos TGT Request - PKINIT) | DC | Certificate Information, TargetUserName |
+| `dir \\10.0.0.206\c$` (或其他存取) | **4624** (成功登入) | DC | Logon Type 3/9, TargetUserName |
+| | **5140** (Network Share Access) | DC | 需啟用 File Share Auditing |
+
+【Windows 設計限制】
+- 4886/4887 的 Attributes 欄位**不會記錄 SAN** (Subject Alternative Name)
+- 要確認 SAN=Administrator@sme.local，必須：
+  1. 查 CA 資料庫：certsrv.msc → Issued Certificates → Details → Subject Alternative Name
+  2. 或解析憑證檔案本身
+
+【驗證要點】
+- 檢查 4887 的 Requester (低權限) vs Subject (高權限) 的矛盾
+- 用 4768 的 Certificate Information + 時間窗，關聯到 4886/4887 的 RequestId
+- 這是 ESC1 偵測的核心：低權限申請高權憑證 → 用憑證做 PKINIT → 成功存取高權資源
+
+---
 
 ## 第二階段快速取證：PowerShell 範本 (Get-WinEvent)
 
