@@ -21,8 +21,10 @@
 2.  右鍵點擊 CA 名稱 (`sme-SME-SWP-W-AD-CA`) -> **Properties (內容)**。
 3.  切換到 **Auditing (稽核)** 頁籤。
 4.  勾選 **Issue and manage certificate requests (發行和管理憑證要求)**。
-5.  點擊 **OK**，並重新啟動 CA 服務：
+5.  點擊 **OK**。
+6.  設定詳細稽核過濾器 (雖然 Event Log 有限制，但這是最佳實踐)：
     ```powershell
+    certutil -setreg CA\AuditFilter 127
     Restart-Service CertSvc
     ```
 
@@ -109,10 +111,16 @@ EDR 或 SIEM 系統應能偵測以下異常行為與事件日誌。
 
 | Event ID | 來源 | 說明 | 偵測重點 (IOC) |
 | :--- | :--- | :--- | :--- |
-| **4886** | Security (CA) | 憑證服務收到憑證申請 | 檢查 `Attributes` 欄位是否包含 `SAN:upn=Administrator@sme.local`，但申請者帳號卻是低權限使用者。 |
-| **4887** | Security (CA) | 憑證服務已發行憑證 | 同上，確認異常 SAN 憑證已被簽發。 |
-| **4768** | Security (DC) | Kerberos TGT 請求 (PKINIT) | 檢查 `Certificate Information`。攻擊者使用憑證進行認證時觸發。若短時間內頻繁申請 TGT 屬異常。 |
+| **4886** | Security (CA) | 憑證服務收到憑證申請 | 檢查 `Attributes` 欄位。**注意：** 即使開啟 `AuditFilter 127`，Windows 預設日誌仍可能不會完整記錄 SAN 屬性，這是已知限制。 |
+| **4887** | Security (CA) | 憑證服務已發行憑證 | 雖然 Event Log 可能缺失 SAN，但 `Requester` (申請者: aduser) 與最終簽發的憑證 (Subject: Administrator) 之間的身分不一致仍是關鍵異常。 |
+| **4768** | Security (DC) | Kerberos TGT 請求 (PKINIT) | 這是最可靠的指標。檢查 `Certificate Information`。攻擊者使用憑證進行認證時觸發。若短時間內頻繁申請 TGT 屬異常。 |
 | **4624** | Security (DC) | 帳戶成功登入 | 登入類型為 `3` (Network) 或 `9` (NewCredentials)，且使用 Administrator 身分。 |
+
+### 進階驗證：直接查詢 CA 資料庫 (繞過 Event Log 限制)
+若 Event 4887 未顯示 SAN，可直接查詢 CA 資料庫確認攻擊是否成功寫入：
+1.  開啟 `certsrv.msc` -> **Issued Certificates**。
+2.  找到最新的憑證 -> **Details** -> **Subject Alternative Name**。
+3.  確認其中包含 `Principal Name=Administrator@sme.local`。
 
 ### Endpoint Telemetry (EDR 視角)
 
